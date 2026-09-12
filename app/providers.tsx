@@ -5,7 +5,6 @@ import { GoogleOAuthProvider } from '@react-oauth/google';
 import { AuthProvider } from '@/lib/auth-context';
 import { CurrencyProvider } from '@/lib/currency';
 import { IncomeModeProvider } from '@/lib/income-mode';
-import { IgnoredProvider } from '@/lib/ignored';
 import { ThemeProvider } from '@/lib/theme';
 
 const PLACEHOLDER_CLIENT_ID = 'your_google_client_id_here';
@@ -31,9 +30,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
       <ThemeProvider>
         <AuthProvider>
           <CurrencyProvider>
-            <IncomeModeProvider>
-            <IgnoredProvider>{children}</IgnoredProvider>
-          </IncomeModeProvider>
+            <IncomeModeProvider>{children}</IncomeModeProvider>
           </CurrencyProvider>
         </AuthProvider>
       </ThemeProvider>

@@ -6,7 +6,6 @@ import { useAuth } from '@/lib/auth-context';
 import { CurrencyToggle } from '@/lib/currency';
 import { ThemeToggle } from '@/lib/theme';
 import { IncomeModeToggle } from '@/lib/income-mode';
-import { IgnoredBanner } from '@/lib/ignored';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { LogOut, Database, BarChart3, Sheet, Loader2 } from 'lucide-react';
@@ -473,9 +472,6 @@ function HomeContent() {
               <BarChart3 className="w-5 h-5 mr-2" />
               View Statistics
             </Link>
-          </div>
-          <div className="mt-8 flex justify-center">
-            <IgnoredBanner />
           </div>
         </div>
       </main>

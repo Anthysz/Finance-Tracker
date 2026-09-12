@@ -5,13 +5,16 @@ import { useAuth } from '@/lib/auth-context';
 import { CurrencyToggle, useCurrency } from '@/lib/currency';
 import { ThemeToggle } from '@/lib/theme';
 import { IncomeModeToggle, useIncomeMode } from '@/lib/income-mode';
-import { IgnoredBanner, useIgnored, entryKey } from '@/lib/ignored';
+import { IgnoredBanner } from '@/lib/ignored';
 import {
   AuthenticationError,
   fetchSpreadsheetData,
   calculateStatistics,
   getQuarterString,
   getWeekString,
+  setEntriesHidden,
+  setEntryHidden,
+  updateTransaction,
   Transaction,
 } from '@/lib/sheets';
 import {
@@ -21,6 +24,9 @@ import {
   DollarSign,
   Calendar,
   X,
+  Pencil,
+  Ban,
+  EyeOff,
 } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
@@ -114,7 +120,6 @@ function StatisticsContent() {
   const { accessToken, spreadsheetId, isReady, handleAuthFailure } = useAuth();
   const { format, formatCompact } = useCurrency();
   const { includeIncome } = useIncomeMode();
-  const { ignored } = useIgnored();
   const router = useRouter();
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(true);
@@ -126,6 +131,17 @@ function StatisticsContent() {
     label: string;
     kind: 'daily' | 'weekly' | 'monthly' | 'quarterly';
   } | null>(null);
+  const [categoryModal, setCategoryModal] = useState<string | null>(null);
+  const [editingRow, setEditingRow] = useState<number | null>(null);
+  const [editForm, setEditForm] = useState({
+    date: '',
+    category: '',
+    name: '',
+    cost: '',
+  });
+  const [hidingRow, setHidingRow] = useState<number | null>(null);
+  const [hideReason, setHideReason] = useState('');
+  const [savingEntry, setSavingEntry] = useState(false);
 
   useEffect(() => {
     // Wait until the persisted session has been read from localStorage,
@@ -154,11 +170,6 @@ function StatisticsContent() {
     setLoading(false);
   };
 
-  const ignoredKeys = useMemo(
-    () => new Set(ignored.map((entry) => entry.key)),
-    [ignored]
-  );
-
   const filteredTransactions = useMemo(() => {
     const inRange = (() => {
       if (range === 'custom') {
@@ -171,8 +182,9 @@ function StatisticsContent() {
       const start = rangeStartDate(range);
       return start ? transactions.filter((t) => t.date >= start) : transactions;
     })();
-    return inRange.filter((t) => !ignoredKeys.has(entryKey(t)));
-  }, [transactions, range, customStart, customEnd, ignoredKeys]);
+    // Hidden entries are excluded from every statistic and chart.
+    return inRange.filter((t) => !t.hiddenReason);
+  }, [transactions, range, customStart, customEnd]);
 
   // The trend granularity follows the selected range: short ranges are charted
   // per day, longer ones per week, month or quarter.
@@ -203,6 +215,15 @@ function StatisticsContent() {
       .sort((a, b) => Math.abs(b.cost) - Math.abs(a.cost));
   }, [drillDown, filteredTransactions]);
 
+  const hasCategoryColumn = transactions.some((t) => t.category !== '');
+
+  const categoryTransactions = useMemo(() => {
+    if (!categoryModal) return [];
+    return transactions
+      .filter((t) => (t.category || t.name) === categoryModal)
+      .sort((a, b) => Math.abs(b.cost) - Math.abs(a.cost));
+  }, [categoryModal, transactions]);
+
   const statistics = useMemo(
     () => calculateStatistics(filteredTransactions, includeIncome),
     [filteredTransactions, includeIncome]
@@ -215,6 +236,129 @@ function StatisticsContent() {
       ),
     [statistics.categoryBreakdown, categorySort]
   );
+
+  const openCategory = (name: string) => {
+    setCategoryModal(name);
+    setEditingRow(null);
+    setHidingRow(null);
+  };
+
+  const closeCategory = () => {
+    setCategoryModal(null);
+    setEditingRow(null);
+    setHidingRow(null);
+  };
+
+  const startEdit = (t: Transaction) => {
+    setEditingRow(t.row ?? null);
+    setEditForm({
+      date: t.date,
+      category: t.category,
+      name: t.name,
+      cost: String(includeIncome ? t.cost : -Math.abs(t.cost)),
+    });
+  };
+
+  const saveEdit = async (t: Transaction) => {
+    if (!accessToken || !spreadsheetId || !t.row) return;
+    setSavingEntry(true);
+    try {
+      const entered = parseFloat(editForm.cost);
+      await updateTransaction(
+        accessToken,
+        spreadsheetId,
+        {
+          row: t.row,
+          date: editForm.date,
+          category: editForm.category,
+          name: editForm.name,
+          cost: includeIncome ? entered : -Math.abs(entered),
+        },
+        hasCategoryColumn
+      );
+      setEditingRow(null);
+      await loadData();
+    } catch (error) {
+      if (error instanceof AuthenticationError) {
+        handleAuthFailure();
+        return;
+      }
+      console.error('Error updating entry:', error);
+      alert('Failed to update entry');
+    }
+    setSavingEntry(false);
+  };
+
+  const hideEntry = async (t: Transaction, reason: string) => {
+    if (!accessToken || !spreadsheetId || !t.row) return;
+    try {
+      await setEntryHidden(
+        accessToken,
+        spreadsheetId,
+        hasCategoryColumn,
+        t.row,
+        reason
+      );
+      setHidingRow(null);
+      setHideReason('');
+      await loadData();
+    } catch (error) {
+      if (error instanceof AuthenticationError) {
+        handleAuthFailure();
+        return;
+      }
+      console.error('Error hiding entry:', error);
+      alert('Failed to hide entry');
+    }
+  };
+
+  const showEntry = async (t: Transaction) => {
+    if (!accessToken || !spreadsheetId || !t.row) return;
+    try {
+      await setEntryHidden(
+        accessToken,
+        spreadsheetId,
+        hasCategoryColumn,
+        t.row,
+        ''
+      );
+      await loadData();
+    } catch (error) {
+      if (error instanceof AuthenticationError) {
+        handleAuthFailure();
+        return;
+      }
+      console.error('Error showing entry:', error);
+      alert('Failed to show entry');
+    }
+  };
+
+  const toggleCategoryHidden = async (hide: boolean) => {
+    if (!accessToken || !spreadsheetId) return;
+    const updates = categoryTransactions
+      .filter((t) => t.row && (hide ? !t.hiddenReason : Boolean(t.hiddenReason)))
+      .map((t) => ({
+        row: t.row as number,
+        reason: hide ? t.hiddenReason || 'Hidden' : '',
+      }));
+    if (updates.length === 0) return;
+    try {
+      await setEntriesHidden(
+        accessToken,
+        spreadsheetId,
+        hasCategoryColumn,
+        updates
+      );
+      await loadData();
+    } catch (error) {
+      if (error instanceof AuthenticationError) {
+        handleAuthFailure();
+        return;
+      }
+      console.error('Error updating hidden state:', error);
+      alert('Failed to update hidden state');
+    }
+  };
 
   if (!isReady) {
     return (
@@ -323,7 +467,9 @@ function StatisticsContent() {
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
           <h1 className="text-3xl font-bold text-gray-900">Statistics</h1>
-          <IgnoredBanner />
+          <IgnoredBanner
+            entries={transactions.filter((t) => t.hiddenReason)}
+          />
         </div>
 
         <div className="flex flex-wrap items-center gap-2 mb-3">
@@ -613,7 +759,11 @@ function StatisticsContent() {
                         {index + 1}
                       </td>
                       <td className="px-4 py-3 text-sm font-medium text-gray-900">
-                        <span className="inline-flex items-center">
+                        <button
+                          type="button"
+                          onClick={() => openCategory(category.name)}
+                          className="inline-flex items-center hover:text-blue-600 hover:underline"
+                        >
                           <span
                             className="mr-2 h-2.5 w-2.5 rounded-full"
                             style={{
@@ -622,7 +772,7 @@ function StatisticsContent() {
                             }}
                           />
                           {category.name}
-                        </span>
+                        </button>
                       </td>
                       <td className="px-4 py-3 text-right text-sm text-gray-700">
                         {category.count}
@@ -691,6 +841,218 @@ function StatisticsContent() {
           </div>
         </div>
       </main>
+
+      {categoryModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 p-4"
+          onClick={closeCategory}
+        >
+          <div
+            className="w-full max-w-2xl rounded-lg bg-white shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between border-b p-4">
+              <div>
+                <h2 className="text-lg font-bold text-gray-900">
+                  {categoryModal}
+                </h2>
+                <p className="text-sm text-gray-500">
+                  {categoryTransactions.length}{' '}
+                  {categoryTransactions.length === 1 ? 'entry' : 'entries'} ·{' '}
+                  {format(
+                    categoryTransactions
+                      .filter((t) => !t.hiddenReason)
+                      .reduce((sum, t) => sum + Math.abs(t.cost), 0)
+                  )}
+                  {categoryTransactions.some((t) => t.hiddenReason) && (
+                    <span className="text-amber-600">
+                      {' '}
+                      ·{' '}
+                      {categoryTransactions.filter((t) => t.hiddenReason).length}{' '}
+                      hidden
+                    </span>
+                  )}
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                {categoryTransactions.some((t) => !t.hiddenReason) && (
+                  <button
+                    type="button"
+                    onClick={() => toggleCategoryHidden(true)}
+                    className="rounded-lg border border-amber-300 px-2.5 py-1 text-xs font-medium text-amber-700 hover:bg-amber-50"
+                  >
+                    Hide all
+                  </button>
+                )}
+                {categoryTransactions.some((t) => t.hiddenReason) && (
+                  <button
+                    type="button"
+                    onClick={() => toggleCategoryHidden(false)}
+                    className="rounded-lg border border-gray-300 px-2.5 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50"
+                  >
+                    Show all
+                  </button>
+                )}
+                <button
+                  onClick={closeCategory}
+                  className="rounded-md p-1.5 text-gray-400 hover:bg-gray-100"
+                  title="Close"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+            <div className="max-h-[60vh] overflow-y-auto p-4">
+              <ul className="divide-y divide-gray-100">
+                {categoryTransactions.map((t) => (
+                  <li
+                    key={t.row ?? `${t.date}-${t.name}`}
+                    className={`py-3 ${t.hiddenReason ? 'opacity-60' : ''}`}
+                  >
+                    {editingRow === t.row ? (
+                      <div className="space-y-2">
+                        <div className="grid grid-cols-2 gap-2">
+                          <input
+                            type="date"
+                            value={editForm.date}
+                            onChange={(e) =>
+                              setEditForm({ ...editForm, date: e.target.value })
+                            }
+                            className="rounded-lg border px-3 py-2 text-sm"
+                          />
+                          <input
+                            type="text"
+                            value={editForm.category}
+                            onChange={(e) =>
+                              setEditForm({
+                                ...editForm,
+                                category: e.target.value,
+                              })
+                            }
+                            placeholder="Category"
+                            className="rounded-lg border px-3 py-2 text-sm"
+                          />
+                          <input
+                            type="text"
+                            value={editForm.name}
+                            onChange={(e) =>
+                              setEditForm({ ...editForm, name: e.target.value })
+                            }
+                            placeholder="Name"
+                            className="col-span-2 rounded-lg border px-3 py-2 text-sm"
+                          />
+                          <input
+                            type="number"
+                            step="0.01"
+                            value={editForm.cost}
+                            onChange={(e) =>
+                              setEditForm({ ...editForm, cost: e.target.value })
+                            }
+                            placeholder="Amount"
+                            className="col-span-2 rounded-lg border px-3 py-2 text-sm"
+                          />
+                        </div>
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => saveEdit(t)}
+                            disabled={savingEntry}
+                            className="rounded-lg bg-blue-600 px-3 py-1.5 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
+                          >
+                            Save
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setEditingRow(null)}
+                            className="rounded-lg border px-3 py-1.5 text-sm hover:bg-gray-50"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-medium text-gray-900">
+                            {t.name}
+                            {t.hiddenReason && (
+                              <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-xs font-normal text-amber-700">
+                                hidden: {t.hiddenReason}
+                              </span>
+                            )}
+                          </p>
+                          <p className="text-xs text-gray-500">{t.date}</p>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <span className="whitespace-nowrap text-sm font-medium text-red-600">
+                            {format(t.cost, { signed: true })}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => startEdit(t)}
+                            title="Edit"
+                            className="rounded-md p-1.5 text-blue-600 hover:bg-blue-50"
+                          >
+                            <Pencil className="w-4 h-4" />
+                          </button>
+                          {hidingRow === t.row ? (
+                            <span className="flex items-center gap-1">
+                              <input
+                                type="text"
+                                value={hideReason}
+                                onChange={(e) => setHideReason(e.target.value)}
+                                placeholder="Reason"
+                                className="w-32 rounded-md border px-2 py-1 text-xs"
+                              />
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  hideEntry(t, hideReason.trim() || 'Hidden')
+                                }
+                                className="rounded-md bg-amber-600 px-2 py-1 text-xs text-white hover:bg-amber-700"
+                              >
+                                Hide
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setHidingRow(null)}
+                                className="rounded-md border px-2 py-1 text-xs hover:bg-gray-50"
+                              >
+                                Cancel
+                              </button>
+                            </span>
+                          ) : t.hiddenReason ? (
+                            <button
+                              type="button"
+                              onClick={() => showEntry(t)}
+                              title="Show"
+                              className="rounded-md p-1.5 text-amber-600 hover:bg-amber-50"
+                            >
+                              <EyeOff className="w-4 h-4" />
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setHidingRow(t.row ?? null);
+                                setHideReason('');
+                              }}
+                              title="Hide"
+                              className="rounded-md p-1.5 text-gray-400 hover:bg-gray-100"
+                            >
+                              <Ban className="w-4 h-4" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        </div>
+      )}
 
       {drillDown && (
         <div

@@ -5,12 +5,13 @@ import { useAuth } from '@/lib/auth-context';
 import { CurrencyToggle, useCurrency } from '@/lib/currency';
 import { ThemeToggle } from '@/lib/theme';
 import { IncomeModeToggle, useIncomeMode } from '@/lib/income-mode';
-import { IgnoredBanner, useIgnored, entryKey } from '@/lib/ignored';
+import { IgnoredBanner } from '@/lib/ignored';
 import {
   AuthenticationError,
   fetchSpreadsheetData,
   addTransaction,
   updateTransaction,
+  setEntryHidden,
   Transaction,
 } from '@/lib/sheets';
 import {
@@ -30,12 +31,13 @@ function DatabaseContent() {
   const { accessToken, spreadsheetId, isReady, handleAuthFailure } = useAuth();
   const { format } = useCurrency();
   const { includeIncome } = useIncomeMode();
-  const { isIgnored, ignore, unignore } = useIgnored();
   const router = useRouter();
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
-  const [sortField, setSortField] = useState<'date' | 'name' | 'cost'>('date');
+  const [sortField, setSortField] = useState<
+    'date' | 'category' | 'name' | 'cost'
+  >('date');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
   const [searchQuery, setSearchQuery] = useState('');
   const [formData, setFormData] = useState({
@@ -52,6 +54,8 @@ function DatabaseContent() {
   // The sheet uses the 4-column layout (Date | Category | Name | Cost) when
   // any loaded row carries a category.
   const hasCategoryColumn = transactions.some((t) => t.category !== '');
+  const isIgnored = (transaction: Transaction) =>
+    Boolean(transaction.hiddenReason);
 
   useEffect(() => {
     // Wait until the persisted session has been read from localStorage,
@@ -80,7 +84,7 @@ function DatabaseContent() {
     setLoading(false);
   };
 
-  const handleSort = (field: 'date' | 'name' | 'cost') => {
+  const handleSort = (field: 'date' | 'category' | 'name' | 'cost') => {
     if (sortField === field) {
       setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
     } else {
@@ -125,15 +129,48 @@ function DatabaseContent() {
     setIgnoreReason('');
   };
 
-  const confirmIgnore = () => {
-    if (!ignoring) return;
-    ignore(ignoring, ignoreReason);
-    setIgnoring(null);
-    setIgnoreReason('');
+  const confirmIgnore = async () => {
+    if (!ignoring || !accessToken || !spreadsheetId || !ignoring.row) return;
+    try {
+      await setEntryHidden(
+        accessToken,
+        spreadsheetId,
+        hasCategoryColumn,
+        ignoring.row,
+        ignoreReason.trim() || 'Hidden'
+      );
+      setIgnoring(null);
+      setIgnoreReason('');
+      await loadData();
+    } catch (error) {
+      if (error instanceof AuthenticationError) {
+        handleAuthFailure();
+        return;
+      }
+      console.error('Error hiding entry:', error);
+      alert('Failed to hide entry');
+    }
   };
 
-  const handleUnignore = (transaction: Transaction) => {
-    unignore(entryKey(transaction));
+  const handleUnignore = async (transaction: Transaction) => {
+    if (!accessToken || !spreadsheetId || !transaction.row) return;
+    try {
+      await setEntryHidden(
+        accessToken,
+        spreadsheetId,
+        hasCategoryColumn,
+        transaction.row,
+        ''
+      );
+      await loadData();
+    } catch (error) {
+      if (error instanceof AuthenticationError) {
+        handleAuthFailure();
+        return;
+      }
+      console.error('Error showing entry:', error);
+      alert('Failed to show entry');
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -193,6 +230,8 @@ function DatabaseContent() {
     let comparison = 0;
     if (sortField === 'date') {
       comparison = a.date.localeCompare(b.date);
+    } else if (sortField === 'category') {
+      comparison = (a.category || '').localeCompare(b.category || '');
     } else if (sortField === 'name') {
       comparison = a.name.localeCompare(b.name);
     } else {
@@ -247,7 +286,9 @@ function DatabaseContent() {
           <div>
             <div className="flex items-center gap-3">
               <h1 className="text-3xl font-bold text-gray-900">Database</h1>
-              <IgnoredBanner />
+              <IgnoredBanner
+                entries={transactions.filter((t) => t.hiddenReason)}
+              />
             </div>
             <p className="text-gray-600 mt-1">
               {transactions.length} total transactions
@@ -303,8 +344,14 @@ function DatabaseContent() {
                       </div>
                     </th>
                     {hasCategoryColumn && (
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Category
+                      <th
+                        onClick={() => handleSort('category')}
+                        className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
+                      >
+                        <div className="flex items-center">
+                          Category
+                          <ArrowUpDown className="w-4 h-4 ml-1" />
+                        </div>
                       </th>
                     )}
                     <th
@@ -389,7 +436,7 @@ function DatabaseContent() {
                               <button
                                 type="button"
                                 onClick={() => handleUnignore(transaction)}
-                                title="Stop ignoring this entry"
+                                title="Show this entry"
                                 className="inline-flex items-center justify-center rounded-md p-1.5 text-amber-600 hover:bg-amber-50"
                               >
                                 <EyeOff className="w-4 h-4" />
@@ -398,7 +445,7 @@ function DatabaseContent() {
                               <button
                                 type="button"
                                 onClick={() => openIgnoreModal(transaction)}
-                                title="Ignore this entry"
+                                title="Hide this entry"
                                 className="inline-flex items-center justify-center rounded-md p-1.5 text-gray-400 hover:bg-gray-100"
                               >
                                 <Ban className="w-4 h-4" />
@@ -528,7 +575,7 @@ function DatabaseContent() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 p-4">
           <div className="w-full max-w-md rounded-lg bg-white shadow-xl">
             <div className="border-b p-6">
-              <h2 className="text-xl font-bold text-gray-900">Ignore Entry</h2>
+              <h2 className="text-xl font-bold text-gray-900">Hide Entry</h2>
               <p className="text-sm text-gray-500 mt-1">
                 {ignoring.name} · {format(ignoring.cost, { signed: true })}
               </p>
@@ -546,7 +593,8 @@ function DatabaseContent() {
                 autoFocus
               />
               <p className="mt-2 text-xs text-gray-500">
-                Ignored entries are excluded from all statistics and charts.
+                Hidden entries are excluded from all statistics and charts, and
+                the reason is saved in the sheet.
               </p>
             </div>
             <div className="flex space-x-3 p-6 pt-0">
@@ -562,7 +610,7 @@ function DatabaseContent() {
                 onClick={confirmIgnore}
                 className="flex-1 rounded-lg bg-amber-600 px-4 py-2 text-white hover:bg-amber-700"
               >
-                Ignore
+                Hide
               </button>
             </div>
           </div>

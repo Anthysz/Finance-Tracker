@@ -5,6 +5,8 @@ export interface Transaction {
   cost: number;
   /** 1-based sheet row, used to update an existing entry. */
   row?: number;
+  /** When set, the entry is hidden from statistics; the text is the reason. */
+  hiddenReason?: string;
 }
 
 export interface Statistics {
@@ -79,6 +81,16 @@ async function fetchWithTimeout(
   }
 }
 
+function isNumericCell(value: unknown): boolean {
+  if (typeof value === 'number') return true;
+  if (typeof value !== 'string') return false;
+  // Text with more than a currency prefix (e.g. "Rp") is a label, not a cost.
+  const letters = (value.match(/[a-zA-Z]/g) || []).length;
+  if (letters > 2) return false;
+  const cleaned = value.replace(/[^0-9.-]/g, '');
+  return cleaned !== '' && Number.isFinite(parseFloat(cleaned));
+}
+
 function parseAmount(value: string | undefined): number {
   if (!value) return 0;
   const parsed = parseFloat(value.replace(/[^0-9.-]/g, ''));
@@ -109,10 +121,14 @@ function mapRow(
   const category = fourColumn ? (row[1] || '').trim() : '';
   const name = ((fourColumn ? row[2] : row[1]) || '').trim();
   const cost = sheetAmountToCost(fourColumn ? row[3] : row[2], fourColumn);
+  // The hidden reason lives in the column after the data (E for 4-column
+  // sheets, D for 3-column sheets). Non-empty means the entry is hidden.
+  const hiddenReason =
+    String((fourColumn ? row[4] : row[3]) ?? '').trim() || undefined;
 
   if (!date || (!name && !category)) return null;
 
-  return { date, category, name, cost, row: rowNumber };
+  return { date, category, name, cost, row: rowNumber, hiddenReason };
 }
 
 export async function fetchSpreadsheetData(
@@ -120,7 +136,7 @@ export async function fetchSpreadsheetData(
   spreadsheetId: string
 ): Promise<Transaction[]> {
   const response = await fetchWithTimeout(
-    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/A2:D`,
+    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/A2:E`,
     {
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -132,8 +148,9 @@ export async function fetchSpreadsheetData(
 
   const data = await response.json();
   const rows: string[][] = data.values || [];
-  // If any row fills a 4th column the sheet uses the Category column layout.
-  const fourColumn = rows.some((row) => (row?.length || 0) >= 4);
+  // The cost is the numeric column: D for the 4-column layout, C for 3-column.
+  // The hidden-reason column (E or D) is text, so it never looks like a cost.
+  const fourColumn = rows.some((row) => isNumericCell(row?.[3]));
 
   return rows
     .map((row, index) => mapRow(row || [], fourColumn, index + 2))
@@ -196,6 +213,62 @@ export async function updateTransaction(
   );
 
   await assertOk('Failed to update transaction', response);
+}
+
+// Hidden entries are stored in the sheet so they survive reloads and follow the
+// row when the sheet is sorted or edited. The column is E for the 4-column
+// layout and D for the 3-column layout.
+export async function setEntryHidden(
+  accessToken: string,
+  spreadsheetId: string,
+  fourColumn: boolean,
+  row: number,
+  reason: string
+): Promise<void> {
+  const column = fourColumn ? 'E' : 'D';
+  const response = await fetchWithTimeout(
+    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${column}${row}?valueInputOption=USER_ENTERED`,
+    {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ values: [[reason]] }),
+    }
+  );
+
+  await assertOk('Failed to update hidden state', response);
+}
+
+export async function setEntriesHidden(
+  accessToken: string,
+  spreadsheetId: string,
+  fourColumn: boolean,
+  updates: { row: number; reason: string }[]
+): Promise<void> {
+  if (updates.length === 0) return;
+  const column = fourColumn ? 'E' : 'D';
+
+  const response = await fetchWithTimeout(
+    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchUpdate`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        valueInputOption: 'USER_ENTERED',
+        data: updates.map((update) => ({
+          range: `${column}${update.row}`,
+          values: [[update.reason]],
+        })),
+      }),
+    }
+  );
+
+  await assertOk('Failed to update hidden state', response);
 }
 
 export async function listSpreadsheets(accessToken: string) {
