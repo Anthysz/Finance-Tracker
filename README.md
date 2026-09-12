@@ -53,17 +53,18 @@ A comprehensive finance tracking web application built with Next.js that integra
 
 Create a Google Sheet with the following format:
 
-| Date       | Name      | Cost    |
-|------------|-----------|---------|
-| 2024-01-15 | Groceries | -50.00  |
-| 2024-01-16 | Salary    | 2000.00 |
-| 2024-01-17 | Coffee    | -5.50   |
+| Date       | Category  | Name      | Cost    |
+|------------|-----------|-----------|---------|
+| 2024-01-15 | Monthly   | Groceries | -50.00  |
+| 2024-01-16 | Salary    | Salary    | 2000.00 |
+| 2024-01-17 | Food      | Cappucino | -5.50   |
 
 **Important:**
 - First row should be headers: Date, Category, Name, Cost
 - Date format: YYYY-MM-DD
 - Use negative numbers for expenses (e.g., -50.00)
 - Use positive numbers for income (e.g., 2000.00)
+![Example Image](/docs/img.png)
 
 ### 3. Local Development
 
