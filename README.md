@@ -60,7 +60,7 @@ Create a Google Sheet with the following format:
 | 2024-01-17 | Coffee    | -5.50   |
 
 **Important:**
-- First row should be headers: Date, Name, Cost
+- First row should be headers: Date, Category, Name, Cost
 - Date format: YYYY-MM-DD
 - Use negative numbers for expenses (e.g., -50.00)
 - Use positive numbers for income (e.g., 2000.00)
